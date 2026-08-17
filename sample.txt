@@ -1,0 +1,11 @@
+openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+read(3, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0"..., 832) = 832
+close(3)                                = 0
+openat(AT_FDCWD, "/etc/hosts", O_RDONLY) = 4
+[pid 12345] connect(5, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("93.184.216.34")}, 16) = -1 EINPROGRESS (Operation now in progress)
+[pid 12345] read(6, <unfinished ...>
+[pid 12345] <... read resumed>"GET / HTTP/1.1\r\n", 4096) = 16
+execve("/bin/sh", ["/bin/sh", "-c", "id"], 0x7ffcf1234560 /* 20 vars */) = 0
+unlink("/tmp/tempfile.txt")            = 0
+--- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=12346, si_status=0, si_utime=0, si_stime=0} ---
++++ exited with 0 +++

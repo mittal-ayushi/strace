@@ -21,8 +21,6 @@ int main(int argc,char *argv[]){
     }
 
     //main code
-    //pid_t pid is a variable that can store process ids. pid_t is a special datatype given to processor ids. 
-    // FORK works bcz it gives 2 diff processor ids to parent n child. child gets ID of 0.
     pid_t pid = fork();
     
     if (pid == 0)  { //child
@@ -45,7 +43,7 @@ int main(int argc,char *argv[]){
         _exit(1);
  
     } else { //parent side
-        close(pipefd[1]);      //parent only reads
+        close(pipefd[1]); 
  
         FILE *trace_stream = fdopen(pipefd[0], "r");
         if (!trace_stream) {
