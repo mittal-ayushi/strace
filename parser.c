@@ -1,3 +1,5 @@
+// ./parser sample.txt to test it
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
