@@ -3,6 +3,7 @@
 //gcc -o sample sample.c
 // ./main ./sample.c (any of the samples)
 // -k for enforcement
+// -p <pid> to attach to a running process
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -223,8 +224,10 @@ static rule_t rules[] = {
     { "ssh-key-access",       "open",    ".ssh/id_",      1 },
     { "shell-spawn",          "execve",  "/bin/sh",       0 },
     { "shell-spawn",          "execve",  "/bin/bash",     0 },
-    { "network-connect",      "connect", "AF_INET",       0 },
     { "temp-file-delete",     "unlink",  "/tmp",          0 },
+    { "dns-lookup",           "connect", "sin_port=htons(53)",  0 },
+    { "network-connect",      "connect", "AF_INET",             0 },
+    { "outbound-connect-any", "connect", NULL,                   0 },
 };
 #define NUM_RULES (int)(sizeof(rules) / sizeof(rules[0]))
 
@@ -269,15 +272,35 @@ static rule_t *check_rules(const syscall_record_t *rec) {
 
 int main(int argc, char *argv[]) {
     int enforce_mode = 0;
+    int attach_mode = 0;
+    pid_t attach_pid = 0;
     int arg_offset = 1;
  
-    if (argc > 1 && strcmp(argv[1], "-k") == 0) {
-        enforce_mode = 1;
-        arg_offset = 2;
+    while (arg_offset < argc) {
+        if (strcmp(argv[arg_offset], "-k") == 0) {
+            enforce_mode = 1;
+            arg_offset++;
+        } else if (strcmp(argv[arg_offset], "-p") == 0) {
+            if (arg_offset + 1 >= argc) {
+                fprintf(stderr, "-p requires a PID argument\n");
+                return 1;
+            }
+            attach_mode = 1;
+            attach_pid = (pid_t)atoi(argv[arg_offset + 1]);
+            if (attach_pid <= 0) {
+                fprintf(stderr, "invalid PID: %s\n", argv[arg_offset + 1]);
+                return 1;
+            }
+            arg_offset += 2;
+        } else {
+            break;
+        }
     }
  
-    if (argc - arg_offset < 1) {
-        fprintf(stderr, "Usage: %s [-k] <target_program> [args...]\n", argv[0]);
+    if (!attach_mode && argc - arg_offset < 1) {
+        fprintf(stderr, "Usage:\n");
+        fprintf(stderr, "  %s [-k] <target_program> [args...]   (launch mode)\n", argv[0]);
+        fprintf(stderr, "  %s [-k] -p <pid>                     (attach mode)\n", argv[0]);
         fprintf(stderr, "  -k   enforce mode: kill target on first matching alert\n");
         return 1;
     }
@@ -296,28 +319,38 @@ int main(int argc, char *argv[]) {
  
     if (pid == 0) {
         close(pipefd[READ_END]);
+        int real_stderr = dup(STDERR_FILENO);
         if (dup2(pipefd[WRITE_END], STDERR_FILENO) == -1) {
             perror("dup2");
             _exit(1);
         }
         close(pipefd[WRITE_END]);
-        setpgid(0, 0);
+
+        if (attach_mode) {
+            char pid_str[16];
+            snprintf(pid_str, sizeof(pid_str), "%d", attach_pid);
+            execlp("strace", "strace", "-p", pid_str, "-e", "trace=network", NULL);
+            dprintf(real_stderr, "execlp strace (attach) failed: %s\n", strerror(errno));
+            _exit(1);
+        } else {
+            setpgid(0, 0);
  
-        int target_argc = argc - arg_offset;
-        char *strace_argv[target_argc + 6];
-        int i = 0;
-        strace_argv[i++] = "strace";
-        strace_argv[i++] = "-f";
-        strace_argv[i++] = "-e";
-        strace_argv[i++] = "trace=file,network,process";
-        for (int j = arg_offset; j < argc; j++) {
-            strace_argv[i++] = argv[j];
+            int target_argc = argc - arg_offset;
+            char *strace_argv[target_argc + 6];
+            int i = 0;
+            strace_argv[i++] = "strace";
+            strace_argv[i++] = "-f";
+            strace_argv[i++] = "-e";
+            strace_argv[i++] = "trace=file,network,process";
+            for (int j = arg_offset; j < argc; j++) {
+                strace_argv[i++] = argv[j];
+            }
+            strace_argv[i] = NULL;
+ 
+            execvp("strace", strace_argv);
+            dprintf(real_stderr, "execvp strace failed: %s\n", strerror(errno));
+            _exit(1);
         }
-        strace_argv[i] = NULL;
- 
-        execvp("strace", strace_argv);
-        perror("execvp strace");
-        _exit(1);
  
     } else {
         close(pipefd[WRITE_END]);
@@ -327,8 +360,13 @@ int main(int argc, char *argv[]) {
             return 1;
         }
  
-        printf("watching PID %d (%s) — enforce mode: %s\n",
-               pid, argv[arg_offset], enforce_mode ? "ON (-k)" : "off (log-only)");
+        if (attach_mode) {
+            printf("attached to PID %d — enforce mode: %s\n",
+                   attach_pid, enforce_mode ? "ON (-k)" : "off (log-only)");
+        } else {
+            printf("watching PID %d (%s) — enforce mode: %s\n",
+                   pid, argv[arg_offset], enforce_mode ? "ON (-k)" : "off (log-only)");
+        }
  
         char *line = NULL;
         size_t len = 0;
@@ -352,9 +390,15 @@ int main(int argc, char *argv[]) {
                     printf(") retval=%s\n", rec.retval);
  
                     if (enforce_mode && hit->enforce && !killed) {
-                        printf("[spy] enforcing: killing process group %d "
-                               "(triggered by rule \"%s\")\n", pid, hit->name);
-                        killpg(pid, SIGKILL);
+                        if (attach_mode) {
+                            printf("enforcing: killing PID %d "
+                                   "(triggered by rule \"%s\")\n", attach_pid, hit->name);
+                            kill(attach_pid, SIGKILL);
+                        } else {
+                            printf("enforcing: killing process group %d "
+                                   "(triggered by rule \"%s\")\n", pid, hit->name);
+                            killpg(pid, SIGKILL);
+                        }
                         killed = 1;
                     }
                 }
@@ -365,7 +409,7 @@ int main(int argc, char *argv[]) {
         fclose(trace_stream);
  
         int status;
-        waitpid(pid, &status, 0);
+        waitpid(pid, &status, 0); 
  
         printf("\n FINAL REPORT\n");
         if (WIFEXITED(status)) {
@@ -382,4 +426,3 @@ int main(int argc, char *argv[]) {
     }
     return 0;
 }
- 
