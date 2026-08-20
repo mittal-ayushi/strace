@@ -13,6 +13,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#include <time.h>
  
 #define READ_END  0
 #define WRITE_END 1
@@ -23,6 +24,9 @@
 #define MAX_RAW_LEN 1024
 #define MAX_RULES 32
 #define MAX_SUMMARY 256
+#define BURST_WINDOW_SECONDS 10
+#define BURST_THRESHOLD 5
+#define MAX_TIMESTAMPS 32
 
 // parser
 typedef enum {
@@ -268,6 +272,32 @@ static rule_t *check_rules(const syscall_record_t *rec) {
     return NULL;
 }
 
+//burst tracking
+typedef struct {
+    time_t timestamps[MAX_TIMESTAMPS];
+    int count;
+    int next;
+    int burst_active;
+} rule_activity_t;
+
+static rule_activity_t rule_activity[NUM_RULES];
+
+static void record_hit(int rule_index) {
+    rule_activity_t *ra = &rule_activity[rule_index];
+    ra->timestamps[ra->next] = time(NULL);
+    ra->next = (ra->next + 1) % MAX_TIMESTAMPS;
+    if (ra->count < MAX_TIMESTAMPS) ra->count++;
+}
+
+static int count_recent_hits(int rule_index, time_t now) {
+    rule_activity_t *ra = &rule_activity[rule_index];
+    int n = 0;
+    for (int i = 0; i < ra->count; i++) {
+        if (now - ra->timestamps[i] <= BURST_WINDOW_SECONDS) n++;
+    }
+    return n;
+}
+
 // MAIN
 
 int main(int argc, char *argv[]) {
@@ -388,6 +418,19 @@ int main(int argc, char *argv[]) {
                         printf("%s%s", a > 0 ? ", " : "", rec.args[a]);
                     }
                     printf(") retval=%s\n", rec.retval);
+ 
+                    int rule_index = (int)(hit - rules);
+                    record_hit(rule_index);
+                    time_t now = time(NULL);
+                    int recent = count_recent_hits(rule_index, now);
+                    rule_activity_t *ra = &rule_activity[rule_index];
+                    if (recent >= BURST_THRESHOLD && !ra->burst_active) {
+                        ra->burst_active = 1;
+                        printf("[BURST] rule=\"%s\" fired %d times in the last %d seconds\n",
+                               hit->name, recent, BURST_WINDOW_SECONDS);
+                    } else if (recent < BURST_THRESHOLD) {
+                        ra->burst_active = 0;
+                    }
  
                     if (enforce_mode && hit->enforce && !killed) {
                         if (attach_mode) {
