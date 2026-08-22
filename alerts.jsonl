@@ -1,0 +1,1 @@
+{"type":"alert","time":1787415806,"rule":"sensitive-file-read","syscall":"openat","args":"AT_FDCWD, \"/etc/shadow\", O_RDONLY","retval":"-1 EACCES (Permission denied)"}

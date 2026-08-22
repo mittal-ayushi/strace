@@ -258,6 +258,25 @@ static void record_summary(const char *syscall) {
         summary_count++;
     }
 }
+static void json_escape(const char *in, char *out, size_t out_size) {
+    size_t o = 0;
+    for (size_t i = 0; in[i] != '\0' && o < out_size - 2; i++) {
+        char c = in[i];
+        if (c == '"' || c == '\\') {
+            out[o++] = '\\';
+            out[o++] = c;
+        } else if (c == '\n') {
+            out[o++] = '\\';
+            out[o++] = 'n';
+        } else if ((unsigned char)c < 0x20) {
+            continue;
+        } else {
+            out[o++] = c;
+        }
+    }
+    out[o] = '\0';
+}
+
 static rule_t *check_rules(const syscall_record_t *rec) {
     for (int i = 0; i < NUM_RULES; i++) {
         if (strcmp(rec->syscall, rules[i].syscall) != 0) continue;
@@ -389,6 +408,11 @@ int main(int argc, char *argv[]) {
             perror("fdopen");
             return 1;
         }
+
+        FILE *alert_log = fopen("alerts.jsonl", "w");
+        if (!alert_log) {
+            perror("fopen alerts.jsonl");
+        }
  
         if (attach_mode) {
             printf("attached to PID %d — enforce mode: %s\n",
@@ -418,6 +442,23 @@ int main(int argc, char *argv[]) {
                         printf("%s%s", a > 0 ? ", " : "", rec.args[a]);
                     }
                     printf(") retval=%s\n", rec.retval);
+
+                    if (alert_log) {
+                        char esc_args[MAX_ARGS * MAX_ARG_LEN];
+                        esc_args[0] = '\0';
+                        for (int a = 0; a < rec.argc; a++) {
+                            char tmp[MAX_ARG_LEN];
+                            json_escape(rec.args[a], tmp, sizeof(tmp));
+                            strncat(esc_args, tmp, sizeof(esc_args) - strlen(esc_args) - 1);
+                            if (a < rec.argc - 1) strncat(esc_args, ", ", sizeof(esc_args) - strlen(esc_args) - 1);
+                        }
+                        char esc_retval[MAX_RETVAL_LEN];
+                        json_escape(rec.retval, esc_retval, sizeof(esc_retval));
+                        fprintf(alert_log,
+                            "{\"type\":\"alert\",\"time\":%ld,\"rule\":\"%s\",\"syscall\":\"%s\",\"args\":\"%s\",\"retval\":\"%s\"}\n",
+                            (long)time(NULL), hit->name, rec.syscall, esc_args, esc_retval);
+                        fflush(alert_log);
+                    }
  
                     int rule_index = (int)(hit - rules);
                     record_hit(rule_index);
@@ -428,6 +469,12 @@ int main(int argc, char *argv[]) {
                         ra->burst_active = 1;
                         printf("[BURST] rule=\"%s\" fired %d times in the last %d seconds\n",
                                hit->name, recent, BURST_WINDOW_SECONDS);
+                        if (alert_log) {
+                            fprintf(alert_log,
+                                "{\"type\":\"burst\",\"time\":%ld,\"rule\":\"%s\",\"count\":%d,\"window\":%d}\n",
+                                (long)now, hit->name, recent, BURST_WINDOW_SECONDS);
+                            fflush(alert_log);
+                        }
                     } else if (recent < BURST_THRESHOLD) {
                         ra->burst_active = 0;
                     }
@@ -450,6 +497,7 @@ int main(int argc, char *argv[]) {
  
         free(line);
         fclose(trace_stream);
+        if (alert_log) fclose(alert_log);
  
         int status;
         waitpid(pid, &status, 0); 
